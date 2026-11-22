@@ -1,0 +1,12 @@
+node_modules/
+dist/
+target/
+src-tauri/gen/
+artifacts/
+hqs/
+*.log
+.env
+.env.*
+!.env.example
+*.pem
+*.key

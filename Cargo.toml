@@ -1,0 +1,9 @@
+[workspace]
+members = ["crates/comic-core", "src-tauri"]
+default-members = ["crates/comic-core"]
+resolver = "2"
+
+# Upstream 0.5.8 chooses Windows source/link libraries using host cfg in build.rs.
+# This local patch uses the actual compilation target for WSL -> Windows builds.
+[patch.crates-io]
+unrar_sys = { path = "vendor/unrar_sys" }

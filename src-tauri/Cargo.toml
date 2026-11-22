@@ -1,0 +1,28 @@
+[package]
+name = "leitor-lele"
+version = "0.1.0"
+edition = "2021"
+description = "POC de leitor CBR desktop"
+
+[lib]
+name = "leitor_lele_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "leitor-lele"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[features]
+default = ["desktop"]
+custom-protocol = ["tauri/custom-protocol"]
+desktop = ["dep:tauri", "dep:tauri-plugin-dialog", "dep:tauri-build"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [], optional = true }
+
+[dependencies]
+tauri = { version = "2", features = ["devtools"], optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
+serde = { version = "1", features = ["derive"] }
+comic-core = { path = "../crates/comic-core" }
