@@ -1,14 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { clampPage } from './navigation';
+import { boundBooks, loadReadingState, saveReadingState, type Fit } from './readingState';
 import './styles.css';
 
 type ComicSummary = { id: string; title: string };
 type ComicInfo = ComicSummary & { pages: { index: number; name: string }[] };
-type Fit = 'page' | 'width';
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 export default function App() {
+  const [initial] = useState(loadReadingState);
+  const saved = useRef(initial.state);
+  const activeDocument = useRef<ComicInfo | null>(null);
+  const [notice, setNotice] = useState(initial.notice);
+  const [collapsed, setCollapsed] = useState(initial.state.preferences.collapsed);
+  const [fullscreen, setFullscreen] = useState(false);
+  const fullscreenBusy = useRef(false);
+  const fullscreenValue = useRef(false);
   const [library, setLibrary] = useState<ComicSummary[]>([]);
   const [libraryLoading, setLibraryLoading] = useState(true);
   const [libraryError, setLibraryError] = useState('');
@@ -20,8 +29,8 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [retry, setRetry] = useState(0);
   const [image, setImage] = useState<{ url: string; comic: ComicInfo; page: number } | null>(null);
-  const [fit, setFit] = useState<Fit>('page');
-  const [zoom, setZoom] = useState(100);
+  const [fit, setFit] = useState<Fit>(initial.state.preferences.fit);
+  const [zoom, setZoom] = useState(initial.state.preferences.zoom);
   const generation = useRef(0);
   // All document mutations and reads share a queue: the Rust side owns one active document.
   const queue = useRef<Promise<unknown>>(Promise.resolve());
@@ -30,6 +39,28 @@ export default function App() {
     queue.current = next.catch(() => undefined);
     return next;
   }, []);
+
+  const toggleFullscreen = useCallback(async () => {
+    if (fullscreenBusy.current) return;
+    fullscreenBusy.current = true;
+    const enabled = !fullscreenValue.current;
+    try {
+      await invoke('set_fullscreen', { enabled });
+      fullscreenValue.current = enabled;
+      setFullscreen(enabled);
+    } catch (e) { setNotice(`Não foi possível alterar a tela cheia: ${message(e)}`); }
+    finally { fullscreenBusy.current = false; }
+  }, []);
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      if (!event.repeat && (event.key === 'F11' || (event.key === 'Escape' && fullscreenValue.current))) {
+        event.preventDefault();
+        void toggleFullscreen();
+      }
+    };
+    window.addEventListener('keydown', keydown);
+    return () => window.removeEventListener('keydown', keydown);
+  }, [toggleFullscreen]);
 
   const refreshLibrary = useCallback(async () => {
     setLibraryLoading(true);
@@ -40,23 +71,46 @@ export default function App() {
   }, []);
   useEffect(() => { void refreshLibrary(); }, [refreshLibrary]);
 
-  const open = async (id?: string) => {
+  const open = useCallback(async (id?: string) => {
     const token = ++generation.current;
+    activeDocument.current = null;
     setBusy(true); setComic(null); setPage(0); setError('');
     try {
       const result = await enqueue(() => id === undefined
         ? invoke<ComicInfo | null>('pick_comic')
         : invoke<ComicInfo>('open_comic', { id }));
       if (token !== generation.current) return;
+      activeDocument.current = result;
+      const position = result && Object.hasOwn(saved.current.books, result.id) ? saved.current.books[result.id] : null;
+      setPage(position && result ? clampPage(position.page, result.pages.length) : 0);
+      setFit(position?.fit ?? saved.current.preferences.fit);
+      setZoom(position?.zoom ?? saved.current.preferences.zoom);
       setComic(result);
       setLibraryId(result ? id ?? null : null);
-      setZoom(100);
     } catch (e) { if (token === generation.current) setError(message(e)); }
     finally { if (token === generation.current) setBusy(false); }
-  };
+  }, [enqueue]);
+
+  useEffect(() => {
+    let disposed = false;
+    const stops: UnlistenFn[] = [];
+    const register = (subscription: Promise<UnlistenFn>) => {
+      void subscription.then(stop => {
+        if (disposed) stop(); else stops.push(stop);
+      }).catch(e => { if (!disposed) setNotice(`Arrastar arquivos indisponível: ${message(e)}`); });
+    };
+    register(listen<{ id: string }>('comic-dropped', event => {
+      if (!disposed && typeof event.payload?.id === 'string' && event.payload.id) void open(event.payload.id);
+    }));
+    register(listen<string>('comic-drop-error', event => {
+      if (!disposed && typeof event.payload === 'string') setNotice(event.payload);
+    }));
+    return () => { disposed = true; stops.forEach(stop => stop()); };
+  }, [open]);
 
   const close = async () => {
     const token = ++generation.current;
+    activeDocument.current = null;
     setComic(null); setPage(0); setBusy(true); setError('');
     try { await enqueue(() => invoke('close_comic')); }
     catch (e) { if (token === generation.current) setError(message(e)); }
@@ -83,6 +137,18 @@ export default function App() {
     return () => { canceled = true; if (url) URL.revokeObjectURL(url); };
   }, [comic, page, retry, enqueue]);
 
+  useEffect(() => {
+    const next = { ...saved.current, preferences: { fit, zoom, collapsed } };
+    if (comic && comic === activeDocument.current && comic.pages.length) {
+      // Move the active canonical id to the end before evicting old books.
+      const others = Object.fromEntries(Object.entries(next.books).filter(([id]) => id !== comic.id));
+      next.books = boundBooks({ ...others, [comic.id]: { page, fit, zoom } });
+    }
+    saved.current = next;
+    const warning = saveReadingState(next);
+    if (warning) setNotice(warning);
+  }, [comic, page, fit, zoom, collapsed]);
+
   const count = comic?.pages.length ?? 0;
   const navigate = useCallback((target: number) => setPage(clampPage(target, count)), [count]);
   useEffect(() => {
@@ -98,8 +164,8 @@ export default function App() {
   }, [comic, busy, page, count, navigate]);
 
   const visibleImage = image?.comic === comic && image.page === page && !loading && !error ? image : null;
-  return <div className="app-shell">
-    <aside className="sidebar">
+  return <div className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''}`}>
+    <aside id="library-sidebar" className="sidebar" hidden={collapsed}>
       <a className="brand" href="#" aria-label="Lelê, início"><span className="brand-mark">lê</span><span>lelê<span className="brand-dot">.</span><small>SEU TEMPO DE LER</small></span></a>
       <button className="open-button" disabled={busy} onClick={() => void open()}><span aria-hidden="true">＋</span> Abrir quadrinho <span className="file-tag">ARQUIVO</span></button>
       <div className="section-heading"><h2>Biblioteca</h2><button className="icon-button" aria-label="Atualizar biblioteca" disabled={libraryLoading} onClick={() => void refreshLibrary()}>↻</button></div>
@@ -115,7 +181,8 @@ export default function App() {
       <div className="sidebar-bottom"><span className="local-dot"/> Local. Simples. Seu.<small>Uma página de cada vez.</small></div>
     </aside>
     <main className="reader">
-      <header className="reader-header"><div><p className="eyebrow">ESPAÇO DE LEITURA</p><h1>{comic?.title ?? 'A próxima história espera.'}</h1></div>{comic && <button className="text-button" disabled={busy} onClick={() => void close()}>Fechar <span aria-hidden="true">×</span></button>}</header>
+      <header className="reader-header"><div className="header-actions"><button aria-label={collapsed ? 'Mostrar biblioteca' : 'Ocultar biblioteca'} aria-expanded={!collapsed} aria-controls="library-sidebar" onClick={() => setCollapsed(value => !value)}>☰</button><button aria-label={fullscreen ? 'Sair da tela cheia' : 'Tela cheia'} aria-pressed={fullscreen} title="Tela cheia (F11)" onClick={() => void toggleFullscreen()}>⛶</button></div><div className="reader-title"><p className="eyebrow">ESPAÇO DE LEITURA</p><h1>{comic?.title ?? 'A próxima história espera.'}</h1></div>{comic && <button className="text-button" disabled={busy} onClick={() => void close()}>Fechar <span aria-hidden="true">×</span></button>}</header>
+      {notice && <div className="notice" role="status">{notice}</div>}
       <section className="toolbar" aria-label="Controles de leitura">
         <div className="navigation-controls"><button aria-label="Primeira página" title="Primeira página (Home)" disabled={!count || page === 0 || busy} onClick={() => navigate(0)}>⇤</button><button aria-label="Página anterior" title="Anterior (←)" disabled={!count || page === 0 || busy} onClick={() => navigate(page - 1)}>←</button><label className="page-control"><span>Página</span><input aria-label="Página atual" type="number" min="1" max={Math.max(1, count)} disabled={!count || busy} value={count ? page + 1 : 0} onChange={event => { if (event.target.value !== '') navigate(Number(event.target.value) - 1); }}/><span>de {count}</span></label><button aria-label="Próxima página" title="Próxima (→)" disabled={!count || page === count - 1 || busy} onClick={() => navigate(page + 1)}>→</button><button aria-label="Última página" title="Última página (End)" disabled={!count || page === count - 1 || busy} onClick={() => navigate(count - 1)}>⇥</button></div>
         <div className="view-controls"><div className="segmented"><button aria-pressed={fit === 'page'} onClick={() => { setFit('page'); setZoom(100); }}>Página inteira</button><button aria-pressed={fit === 'width'} onClick={() => { setFit('width'); setZoom(100); }}>Largura</button></div><span className="divider"/><button aria-label="Diminuir zoom" disabled={zoom <= 25} onClick={() => setZoom(z => Math.max(25, z - 25))}>−</button><button className="zoom-value" aria-label="Redefinir zoom" onClick={() => setZoom(100)}>{zoom}%</button><button aria-label="Aumentar zoom" disabled={zoom >= 300} onClick={() => setZoom(z => Math.min(300, z + 25))}>＋</button></div>

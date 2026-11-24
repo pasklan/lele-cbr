@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # Optional local LLVM/cargo-xwin/SDK environment. No tools are installed here.
+export LELE_TOOLCHAIN="${LELE_TOOLCHAIN:-$HOME/.local/share/lele-toolchain}"
 if [[ -n "${LELE_TOOLCHAIN:-}" && -f "$LELE_TOOLCHAIN/env.sh" ]]; then
   source "$LELE_TOOLCHAIN/env.sh"
   if [[ -d "$LELE_TOOLCHAIN/llvm20-root/usr/lib/llvm-20/bin" ]]; then
@@ -18,3 +19,4 @@ mkdir -p artifacts
 cp target/x86_64-pc-windows-msvc/release/leitor-lele.exe artifacts/LeitorLele.exe
 cp crates/comic-core/UNRAR-LICENSE.txt artifacts/UNRAR-LICENSE.txt
 printf 'Windows executable: %s/artifacts/LeitorLele.exe\n' "$PWD"
+python scripts/package_windows.py

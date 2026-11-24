@@ -108,6 +108,44 @@ impl Reader {
         }
         self.open(&id)
     }
+    /// Called only after a native file-drop event, never exposed as an IPC command.
+    pub fn authorize_drop(&mut self, paths: &[std::path::PathBuf]) -> Result<ComicSummary, String> {
+        let [path] = paths else {
+            return Err("Solte apenas um arquivo CBR por vez.".into());
+        };
+        let path = path
+            .canonicalize()
+            .map_err(|e| format!("Não foi possível acessar o arquivo: {e}"))?;
+        if !path.is_file()
+            || !path
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("cbr"))
+        {
+            return Err("Solte um arquivo CBR válido, não uma pasta ou outro formato.".into());
+        }
+        let document = comic_core::ComicDocument::open(&path).map_err(|e| e.to_string())?;
+        if document.pages().is_empty() {
+            return Err("Este CBR não contém imagens compatíveis.".into());
+        }
+        let summary = ComicSummary {
+            id: path.to_string_lossy().into_owned(),
+            title: path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+        };
+        if !self.library.iter().any(|source| source.path == path) {
+            let source = LocalDocument {
+                path,
+                title: summary.title.clone(),
+            };
+            self.selected.push(source.clone());
+            self.library.push(source);
+        }
+        Ok(summary)
+    }
+
     pub fn read_page(&mut self, document_id: &str, index: usize) -> Result<Vec<u8>, String> {
         let (id, document) = self.active.as_mut().ok_or("Nenhum quadrinho aberto.")?;
         if id != document_id {
@@ -123,6 +161,36 @@ impl Reader {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_drop_authorizes_one_valid_cbr_without_switching_the_active_book() {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../hqs");
+        let samples = list_documents(&directory).unwrap();
+        let mut reader = Reader::new(None).unwrap();
+        let first = reader.open_selected(&samples[0].path).unwrap();
+        let dropped = reader.authorize_drop(&[samples[1].path.clone()]).unwrap();
+        assert_eq!(dropped.id, samples[1].path.to_string_lossy());
+        assert!(!reader.read_page(&first.id, 0).unwrap().is_empty());
+        let second = reader.open(&dropped.id).unwrap();
+        assert!(!reader.read_page(&second.id, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn native_drop_rejects_multiple_invalid_and_missing_sources() {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("../hqs");
+        let sample = list_documents(&directory).unwrap().remove(0).path;
+        let mut reader = Reader::new(None).unwrap();
+        for paths in [
+            vec![],
+            vec![sample.clone(), sample.clone()],
+            vec![directory],
+            vec![sample.with_extension("missing.cbr")],
+            vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")],
+        ] {
+            assert!(reader.authorize_drop(&paths).is_err());
+        }
+        assert!(reader.list().is_empty());
+    }
+
     #[test]
     fn refresh_rescans_added_removed_files_and_reports_directory_errors() {
         let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(

@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
-use tauri::{ipc::Response, State};
+use tauri::{ipc::Response, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 type SharedReader = Arc<Mutex<Reader>>;
@@ -88,6 +88,11 @@ async fn pick_comic(
     .await
 }
 
+#[tauri::command]
+async fn set_fullscreen(window: tauri::Window, enabled: bool) -> Result<(), String> {
+    window.set_fullscreen(enabled).map_err(|e| e.to_string())
+}
+
 fn library_directory() -> Option<PathBuf> {
     std::env::var_os("LELE_LIBRARY_DIR")
         .map(PathBuf::from)
@@ -112,12 +117,37 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(Mutex::new(reader)))
+        .on_window_event(|window, event| {
+            // The OS supplies these paths. No IPC command accepts arbitrary drop paths.
+            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                let paths = paths.clone();
+                let state = window.state::<SharedReader>().inner().clone();
+                let window = window.clone();
+                tauri::async_runtime::spawn(async move {
+                    match with_reader(state, move |reader| reader.authorize_drop(&paths)).await {
+                        Ok(summary) => {
+                            if let Err(error) = window.emit("comic-dropped", summary) {
+                                eprintln!("Não foi possível informar o arquivo solto: {error}");
+                            }
+                        }
+                        Err(error) => {
+                            if let Err(emit_error) = window.emit("comic-drop-error", error) {
+                                eprintln!(
+                                    "Não foi possível informar o erro de abertura: {emit_error}"
+                                );
+                            }
+                        }
+                    }
+                });
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             list_library,
             open_comic,
             read_page,
             close_comic,
-            pick_comic
+            pick_comic,
+            set_fullscreen
         ])
         .run(tauri::generate_context!())
         .expect("Não foi possível iniciar o Leitor Lelê");

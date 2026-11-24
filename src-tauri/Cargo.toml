@@ -1,6 +1,6 @@
 [package]
 name = "leitor-lele"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "POC de leitor CBR desktop"
 

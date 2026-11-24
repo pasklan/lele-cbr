@@ -14,6 +14,8 @@ if errorlevel 1 goto :fail
 if not exist artifacts mkdir artifacts
 copy /y target\release\leitor-lele.exe artifacts\LeitorLele.exe
 if errorlevel 1 goto :fail
+copy /y crates\comic-core\UNRAR-LICENSE.txt artifacts\UNRAR-LICENSE.txt
+if errorlevel 1 goto :fail
 echo Executavel: %~dp0artifacts\LeitorLele.exe
 popd
 exit /b 0

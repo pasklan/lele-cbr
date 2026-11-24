@@ -1,0 +1,4 @@
+# Keep the Windows executable independent of the Visual C++ Redistributable.
+# cc-rs also uses this target feature to select /MT for the native UnRAR code.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

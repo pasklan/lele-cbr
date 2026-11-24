@@ -82,8 +82,8 @@ try {
   await mkdir(output, { recursive: true });
   const screenshot = await cdp('Page.captureScreenshot', { format: 'png' });
   await writeFile(path.join(output, 'windows-reader.png'), Buffer.from(screenshot.data, 'base64'));
-  await evaluate(`document.querySelector('.reader-header button').click()`);
-  await until('!document.querySelector("img.comic-page") && !document.querySelector(".reader-header button")', 'closed book');
+  await evaluate(`document.querySelector('.reader-header button.text-button').click()`);
+  await until('!document.querySelector("img.comic-page") && !document.querySelector(".reader-header button.text-button")', 'closed book');
   assert.equal(await evaluate(`window.__TAURI_INTERNALS__.invoke('read_page',{index:0,documentId:'stale'}).then(()=>false,()=>true)`), true);
   assert.equal(await evaluate('document.querySelectorAll("[role=alert]").length'), 0);
   assert.deepEqual(exceptions, []);
